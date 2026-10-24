@@ -160,6 +160,23 @@ index a5c9d8a..b0811b9 100644
  }
 
  /// Wraps the app to read dropped files asynchronously (browsers can't read them synchronously,
+diff --git a/crates/raw/src/cr3.rs b/crates/raw/src/cr3.rs
+index bb2119e..8ca816b 100644
+--- a/crates/raw/src/cr3.rs
++++ b/crates/raw/src/cr3.rs
+@@ -141,10 +141,8 @@ fn walk<'a>(raw: &'a [u8], b: &'a [u8], depth: usize, budget: &mut usize, found:
+     }
+     boxes(b, budget, |item, budget| match item.kind {
+         b"moov" => walk(raw, item.body, depth + 1, budget, found),
+-        b"trak" => {
+-            if found.previews.len() < 128 {
+-                found.previews.extend(track_preview(raw, item.body, budget, &found.media));
+-            }
++        b"trak" if found.previews.len() < 128 => {
++            found.previews.extend(track_preview(raw, item.body, budget, &found.media));
+         }
+         b"uuid" => {
+             if item.body.get(..16) == Some(META_UUID)
 diff --git a/crates/ui-egui/Cargo.toml b/crates/ui-egui/Cargo.toml
 index aeefaca..f6218f0 100644
 --- a/crates/ui-egui/Cargo.toml
