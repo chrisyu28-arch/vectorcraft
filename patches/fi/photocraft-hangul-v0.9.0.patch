@@ -63,7 +63,7 @@ index a4ded64..aef9b5e 100644
  [dev-dependencies]
  serde_json = { workspace = true }
 diff --git a/apps/photocraft-web/src/web.rs b/apps/photocraft-web/src/web.rs
-index a5c9d8a..5e22268 100644
+index a5c9d8a..b0811b9 100644
 --- a/apps/photocraft-web/src/web.rs
 +++ b/apps/photocraft-web/src/web.rs
 @@ -6,10 +6,9 @@ use std::sync::{Arc, Mutex};
@@ -117,7 +117,7 @@ index a5c9d8a..5e22268 100644
                      load_font_manifest(served.clone(), cc.egui_ctx.clone());
                      let (session, warnings) = crate::preset_bridge::session(presets.clone());
                      preset_warnings.extend(warnings);
-@@ -202,20 +223,31 @@ async fn fetch_bytes(url: &str, integrity: Option<&str>) -> Result<Vec<u8>, Stri
+@@ -202,20 +223,30 @@ async fn fetch_bytes(url: &str, integrity: Option<&str>) -> Result<Vec<u8>, Stri
      use wasm_bindgen_futures::JsFuture;
      let js = |e: wasm_bindgen::JsValue| format!("{e:?}");
      let window = web_sys::window().ok_or("no window")?;
@@ -144,8 +144,7 @@ index a5c9d8a..5e22268 100644
 -        return Err(format!("HTTP {}", resp.status()));
 +    let timer = window.set_timeout_with_callback_and_timeout_and_arguments_0(on_timeout.as_ref().unchecked_ref(), 30_000).map_err(js)?;
 +    let result = async {
-+        let resp: web_sys::Response =
-+            JsFuture::from(window.fetch_with_str_and_init(url, &init)).await.map_err(js)?.dyn_into().map_err(|_| "not a Response")?;
++        let resp: web_sys::Response = JsFuture::from(window.fetch_with_str_and_init(url, &init)).await.map_err(js)?.dyn_into().map_err(|_| "not a Response")?;
 +        if !resp.ok() {
 +            return Err(format!("HTTP {}", resp.status()));
 +        }
@@ -340,7 +339,7 @@ index 0000000..e4ff782
 @@ -0,0 +1 @@
 +Noto Sans CJK SC | Regular | fonts/2c76254f6fc379fd/NotoSansCJKsc-Regular.otf | Kore,Hans,Latn | OFL-1.1 | fonts/2c76254f6fc379fd/OFL.txt | 2c76254f6fc379fddfce0a7e84fb5385bb135d3e399294f6eeb6680d0365b74b | https://github.com/notofonts/noto-cjk/tree/f8d157532fbfaeda587e826d4cd5b21a49186f7c/Sans/OTF/SimplifiedChinese
 diff --git a/packaging/web/package.sh b/packaging/web/package.sh
-index 8c6c1f8..645a5f6 100755
+index 8c6c1f8..1f8bd18 100755
 --- a/packaging/web/package.sh
 +++ b/packaging/web/package.sh
 @@ -11,6 +11,30 @@ set -euo pipefail
@@ -362,7 +361,7 @@ index 8c6c1f8..645a5f6 100755
 +  [ "$(sha256 "$root/$HANGUL_DIR/NotoSansCJKsc-Regular.otf")" = "2c76254f6fc379fddfce0a7e84fb5385bb135d3e399294f6eeb6680d0365b74b" ] || {
 +    echo "error: Korean font SHA-256 mismatch" >&2; exit 1;
 +  }
-+  [ "$(sha256 "$root/$HANGUL_DIR/OFL.txt")" = "cc0eaf2711e2af9e233ef8d4d2ead8481ae3ee51065a5dbe254578d5868aa40e" ] || {
++  [ "$(sha256 "$root/$HANGUL_DIR/OFL.txt")" = "6a73f9541c2de74158c0e7cf6b0a58ef774f5a780bf191f2d7ec9cc53efe2bf2" ] || {
 +    echo "error: Korean font licence SHA-256 mismatch" >&2; exit 1;
 +  }
 +}

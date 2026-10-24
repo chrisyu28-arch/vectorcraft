@@ -129,10 +129,7 @@ mod tests {
         };
         let font = skrifa::FontRef::new(face.bytes).unwrap();
         let charmap = font.charmap();
-        let covered = (0xAC00..=0xD7A3)
-            .filter_map(char::from_u32)
-            .filter(|c| charmap.map(*c).is_some_and(|glyph| glyph.to_u32() != 0))
-            .count();
+        let covered = (0xAC00..=0xD7A3).filter_map(char::from_u32).filter(|c| charmap.map(*c).is_some_and(|glyph| glyph.to_u32() != 0)).count();
         assert_eq!(covered, 11_172, "the startup font must cover every modern Hangul syllable");
         assert!(WEB_FONTS.iter().any(|f| f.family == face.family && f.style == face.style && f.startup));
         eprintln!("Noto Sans CJK SC Regular: {covered}/11172 modern Hangul syllables verified");
