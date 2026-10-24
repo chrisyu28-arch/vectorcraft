@@ -178,6 +178,23 @@ index f50cb8c..d3341ee 100644
              _ if kind.first().is_some_and(u8::is_ascii_uppercase) => {
                  return Err(Error::Unsupported("unknown critical PNG chunk"));
              }
+diff --git a/crates/plugins/src/manifest.rs b/crates/plugins/src/manifest.rs
+index ccabf47..52994bc 100644
+--- a/crates/plugins/src/manifest.rs
++++ b/crates/plugins/src/manifest.rs
+@@ -122,10 +122,8 @@ impl Manifest {
+                 return Err(Error::Manifest(format!("invalid parameter name {k:?}")));
+             }
+             match spec {
+-                ParamSpec::Number { min, max, default } => {
+-                    if !(min.is_finite() && max.is_finite() && default.is_finite()) || min > max {
+-                        return Err(Error::Manifest(format!("parameter `{k}`: bad range")));
+-                    }
++                ParamSpec::Number { min, max, default } if !(min.is_finite() && max.is_finite() && default.is_finite()) || min > max => {
++                    return Err(Error::Manifest(format!("parameter `{k}`: bad range")));
+                 }
+                 ParamSpec::Int { min, max, .. } if min > max => return Err(Error::Manifest(format!("parameter `{k}`: bad range"))),
+                 ParamSpec::Choice { options, default } => {
 diff --git a/crates/raw/src/cr3.rs b/crates/raw/src/cr3.rs
 index bb2119e..8ca816b 100644
 --- a/crates/raw/src/cr3.rs
@@ -440,3 +457,22 @@ index 8c6c1f8..1f8bd18 100755
  rm -f "$DIST/$NAME.zip"
  (cd "$WORK" && zip -qr9 "$DIST/$NAME.zip" "$NAME")
  echo "wrote $DIST/$NAME.zip"
+diff --git a/xtask/src/layers.rs b/xtask/src/layers.rs
+index 2128345..6bfb675 100644
+--- a/xtask/src/layers.rs
++++ b/xtask/src/layers.rs
+@@ -199,11 +199,10 @@ pub fn check(crates: &[Crate]) -> Vec<Violation> {
+                 match classify(&d.name) {
+                     // Unregistered deps are reported on their own entry.
+                     None => {}
+-                    Some(Class::Testkit) => {
+-                        if d.kind != DepKind::Dev {
+-                            out.push(Violation::TestkitAsNormalDep { krate: c.name.clone() });
+-                        }
++                    Some(Class::Testkit) if d.kind != DepKind::Dev => {
++                        out.push(Violation::TestkitAsNormalDep { krate: c.name.clone() });
+                     }
++                    Some(Class::Testkit) => {}
+                     Some(dc) => {
+                         let to = dc.layer().unwrap_or(u8::MAX);
+                         if to >= layer && !(to == layer && intra_layer_allowed(&c.name, &d.name)) {

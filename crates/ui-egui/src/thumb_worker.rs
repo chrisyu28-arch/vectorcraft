@@ -127,7 +127,8 @@ impl Settle {
         }
         let waited = now - self.since;
         // The clock went back (a new egui context): don't wait for it to catch up.
-        if waited >= SETTLE_SECS || waited < 0.0 {
+        // NaN did not satisfy either comparison in the original elapsed-time check.
+        if !(waited.is_nan() || (0.0..SETTLE_SECS).contains(&waited)) {
             return true;
         }
         ctx.request_repaint_after(std::time::Duration::from_secs_f64((SETTLE_SECS - waited).max(0.0)));
@@ -173,5 +174,7 @@ mod tests {
         assert!(!s.settled(&ctx, 1, 2, 10.2), "a new revision starts it again");
         assert!(!s.settled(&ctx, 2, 2, 10.25), "so does another document");
         assert!(s.settled(&ctx, 2, 2, 1.0), "a clock that went back doesn't hold it up");
+        assert!(!s.settled(&ctx, 2, 2, f64::NAN), "an unordered elapsed time is not settled");
+        assert!(s.settled(&ctx, 2, 2, f64::INFINITY), "an elapsed time above the threshold is settled");
     }
 }
