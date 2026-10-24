@@ -10,15 +10,15 @@ This patch serves the unmodified Noto Sans CJK SC Regular font at startup throug
 - Font SHA-256: `2c76254f6fc379fddfce0a7e84fb5385bb135d3e399294f6eeb6680d0365b74b`.
 - Font licence: SIL Open Font License 1.1; the original OFL text is packaged beside the font and at the package root. OFL SHA-256: `6a73f9541c2de74158c0e7cf6b0a58ef774f5a780bf191f2d7ec9cc53efe2bf2`.
 - Original font: [notofonts/noto-cjk at f8d15753](https://github.com/notofonts/noto-cjk/blob/f8d157532fbfaeda587e826d4cd5b21a49186f7c/Sans/OTF/SimplifiedChinese/NotoSansCJKsc-Regular.otf).
-- Toolchain: Rust 1.95.0, `wasm32-unknown-unknown`, Trunk 0.21.14, locked Cargo dependencies.
+- Toolchain: Rust 1.99.0, `wasm32-unknown-unknown`, Trunk 0.21.14, locked Cargo dependencies.
 
 The family name is exact. `Noto Sans SC` is not the manifest entry used here, and its name alone would not prove Hangul coverage.
 
-## Source compatibility with full CI
+## Official build toolchain and full CI
 
-The upstream v0.11.0 workspace declares Rust 1.95 as its minimum version. Its Web release job selects the moving `stable` toolchain through the pinned rust-toolchain action; this workflow fixes 1.95.0 for repeatable tool selection, without claiming that every upstream release used that exact compiler. The original Web release job packages the app without running the full `cargo xtask ci` gate.
+The upstream workspaces declare Rust 1.95 as their minimum version, while their Web release jobs select the moving `stable` toolchain. The successful official [Vector v0.11.0 Web job](https://github.com/storytold/vectorcraft/actions/runs/38568956510/job/115868842671) and [Photo v0.9.0 Web job](https://github.com/storytold/photocraft/actions/runs/38579012024/job/115916197494) both record `rustc 1.99.0 (b940084d7 2026-09-28)`. This workflow pins that actual release compiler to 1.99.0.
 
-Running that gate on 1.95.0 exposed Clippy warnings in original upstream code. The renderer now expresses a missing or different cached pixel buffer with `is_none_or` and inequality, preserving both early-return cases. PDF import puts the existing shading-resource check in the match guard, still counting only readable shadings and ignoring absent ones. Layer-panel Boolean comparison uses inequality instead of equality with a negated operand. The thumbnail clock uses range containment with an explicit NaN exclusion, preserving negative, infinite and unordered elapsed-time behavior. The Photo patch similarly moves the CR3 preview-count, PNG missing-image, plugin-number range and testkit dependency checks into match guards, retaining the separate normal IEND and allowed dev-dependency arms. These equivalent source changes retain `-D warnings`; no lint or CI gate is disabled.
+Photo's same-commit official [Ubuntu CI job](https://github.com/storytold/photocraft/actions/runs/38578995935/job/115991536468) records the same compiler and a successful `cargo clippy --workspace --all-targets --locked --features heif -- -D warnings`. Its separate Clippy version string was not logged. The original Web release job packages the app without running the full `cargo xtask ci` gate; this fork still requires that complete gate and its font checks. Unrelated renderer, parser and validator conditions remain at their upstream bytes.
 
 Both jobs first run Clippy with `--keep-going` to collect independent compiler failures in one run. This is an additional diagnostic pass with the same warning policy; the unchanged complete `cargo xtask ci` and mandatory font tests must still succeed afterward.
 
@@ -37,7 +37,9 @@ The original `.github/workflows/release.yml` only has `push.branches: [release]`
 
 ## Verification scope
 
-The cmap guard checks nonzero glyph IDs for every modern precomposed Hangul syllable in the real font bytes. The workflow checks that the packaged bytes are identical and that licences are present. This is not a browser or IME test: Korean labels, filenames, document text, initial loading, reload and font-fetch failure still need browser verification. The existing startup loader retains its 20-second per-font timeout and warning/skip behaviour on failed downloads.
+The cmap guard checks nonzero glyph IDs for every modern precomposed Hangul syllable in the real font bytes. The workflow checks that the packaged bytes are identical and that licences are present. This is not a browser or IME test: Korean labels, filenames, document text, initial loading, reload and font-fetch failure still need browser verification. The startup loader retains its 20-second per-font timeout. With a nonempty web-font manifest, Noto Sans CJK SC Regular must be listed for startup and must download, pass the existing integrity check and register successfully before the app starts. Failure leaves the loading DOM visible with a Korean instruction to check the connection and reload. Other failed faces retain their warning/skip behaviour, and optional local builds with an empty web-font manifest still start.
+
+Browser fault checks must cover a missing required file, a failed or corrupt response and a timeout: each must show the reload instruction without starting the editor. Restoring the font and reloading must start it successfully. Failure of an optional startup face must still permit startup when the required Korean face loads. These runtime checks are separate from the build-time cmap test.
 
 The patch does not change desktop font selection, translations, font outlines, source licensing, or hosting settings.
 

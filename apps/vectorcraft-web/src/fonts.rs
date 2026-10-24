@@ -1,8 +1,9 @@
 //! Craft-fonts faces served beside the wasm (`fonts/<sha16>/…`, copied by
 //! `cargo xtask web-fonts`) instead of embedded: [`load_startup_fonts`] fetches the `startup`
 //! ones before the app starts, [`spawn_background_fonts`] the rest once it runs. The browser checks
-//! each file against its SHA-256 (Subresource Integrity). A face that fails is logged and skipped:
-//! the app runs without it. With `WEB_FONTS` empty (built without craft-fonts) both do nothing.
+//! each file against its SHA-256 (Subresource Integrity). The Korean fallback is required before
+//! startup; other failed faces are logged and skipped. With `WEB_FONTS` empty (built without
+//! craft-fonts) both do nothing.
 
 use std::cell::Cell;
 use std::rc::Rc;
@@ -24,15 +25,29 @@ thread_local! {
     static BACKGROUND_STARTED: Cell<bool> = const { Cell::new(false) };
 }
 
-/// Fetch and register the `startup` faces (one after the other). Returns how many loaded.
-pub async fn load_startup_fonts() -> usize {
+/// The full face whose Hangul coverage the release build verifies.
+fn is_korean_fallback(f: &WebFont) -> bool {
+    f.family == "Noto Sans CJK SC" && f.style == "Regular"
+}
+
+/// Fetch and register the `startup` faces (one after the other). Returns how many loaded, or an
+/// error if the required Korean fallback is absent or fails. Empty optional local builds still run.
+pub async fn load_startup_fonts() -> Result<usize, &'static str> {
+    if WEB_FONTS.is_empty() {
+        return Ok(0);
+    }
+    if !WEB_FONTS.iter().any(|f| f.startup && is_korean_fallback(f)) {
+        return Err("required startup font Noto Sans CJK SC Regular is absent");
+    }
     let mut loaded = 0;
     for f in WEB_FONTS.iter().filter(|f| f.startup) {
         if load(f, STARTUP_TIMEOUT_MS).await {
             loaded += 1;
+        } else if is_korean_fallback(f) {
+            return Err("required startup font Noto Sans CJK SC Regular could not be loaded and registered");
         }
     }
-    loaded
+    Ok(loaded)
 }
 
 /// Fetch and register the `background` faces, [`BACKGROUND_PARALLEL`] at a time, asking `ctx` for

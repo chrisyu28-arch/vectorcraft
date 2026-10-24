@@ -64,9 +64,13 @@ pub fn start() {
     wasm_bindgen_futures::spawn_local(async move {
         // Before the first frame, which looks for copies a crash left behind.
         let locks = WebLocks::start(RECOVERY_PREFIX).await;
-        // Fallback fonts the first frame needs (Noto Sans Arabic), fetched while the loading text
-        // shows; the rest load in the background once the app runs.
-        crate::fonts::load_startup_fonts().await;
+        // Fetch first-frame fallbacks while the loading text shows. The required Korean face
+        // must be registered before the app can start; other faces keep their optional behaviour.
+        if let Err(e) = crate::fonts::load_startup_fonts().await {
+            log::error!("vectorcraft-web: {e}");
+            notice(&["한글 글꼴을 불러오지 못해 시작할 수 없습니다.", "연결을 확인한 뒤 페이지를 새로고침해 주세요."]);
+            return;
+        }
         let host = Host {
             runner: eframe::WebRunner::new(),
             inbox: Arc::default(),

@@ -24,7 +24,7 @@ env:
   PHOTO_FONT_ORIGIN_COMMIT: f8d157532fbfaeda587e826d4cd5b21a49186f7c
   PHOTO_FONT_LICENSE_SHA256: 6a73f9541c2de74158c0e7cf6b0a58ef774f5a780bf191f2d7ec9cc53efe2bf2
   PHOTO_PATCH_PATH: patches/fi/photocraft-hangul-v0.9.0.patch
-  PHOTO_PATCH_SHA256: 76de113483087b6469d7179bdf49e293c085acc0e9e17aa40f91b9f884bd068a
+  PHOTO_PATCH_SHA256: 7ca8751e60a8a927a55f832cd1d759cecd49905c6437775c76fe7c6bc774305f
   PHOTOCRAFT_VERSION: 0.9.0-fi.1
   CARGO_PROFILE_DEV_DEBUG: "0"
   CARGO_PROFILE_TEST_DEBUG: "0"
@@ -79,12 +79,12 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@686976e191b89faba57d3206551f0f330d8cb249
         with:
-          toolchain: 1.95.0
+          toolchain: 1.99.0
           targets: wasm32-unknown-unknown
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
-          key: fi-web-rust-1.95.0
+          key: fi-web-rust-1.99.0
       - name: Full upstream CI and required Hangul cmap guard
         shell: bash
         run: |
@@ -238,12 +238,12 @@ jobs:
           sudo apt-get install -y --no-install-recommends pkg-config libxkbcommon-dev libwayland-dev libx11-dev libxrandr-dev libxi-dev libgl1-mesa-dev
       - uses: dtolnay/rust-toolchain@686976e191b89faba57d3206551f0f330d8cb249
         with:
-          toolchain: 1.95.0
+          toolchain: 1.99.0
           targets: wasm32-unknown-unknown
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
-          key: fi-photo-web-rust-1.95.0
+          key: fi-photo-web-rust-1.99.0
           workspaces: photocraft -> target
       - name: Full upstream CI and required real-font regression
         working-directory: photocraft
