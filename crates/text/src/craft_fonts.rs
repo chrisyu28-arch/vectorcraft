@@ -110,10 +110,31 @@ mod tests {
             assert!(name.ends_with(".ttf") || name.ends_with(".otf"), "{}", w.url);
             assert!(w.integrity.starts_with("sha256-") && w.integrity.len() == "sha256-".len() + 44, "{}", w.integrity);
         }
-        // The fallbacks the first frame may need: Noto Sans Arabic and Noto Sans Thai, where the
+        // The fallbacks the first frame may need: Noto Sans Arabic, Noto Sans Thai and Noto Sans CJK SC, where the
         // checkout has them.
         let startup: Vec<_> = WEB_FONTS.iter().filter(|w| w.startup).map(|w| w.family).collect();
-        let expected: Vec<_> = ["Noto Sans Arabic", "Noto Sans Thai"].into_iter().filter(|n| CRAFT_FONTS.iter().any(|f| f.family == *n)).collect();
+        let expected: Vec<_> =
+            ["Noto Sans Arabic", "Noto Sans Thai", "Noto Sans CJK SC"].into_iter().filter(|n| CRAFT_FONTS.iter().any(|f| f.family == *n)).collect();
         assert_eq!(startup, expected);
+    }
+
+    #[test]
+    fn web_korean_fallback_covers_every_modern_hangul_syllable() {
+        use skrifa::MetadataProvider as _;
+
+        let Some(face) = CRAFT_FONTS.iter().find(|f| f.family == "Noto Sans CJK SC" && f.style == "Regular") else {
+            assert!(std::env::var_os("CRAFT_FONTS_REQUIRED").is_none(), "required craft-fonts checkout has no Noto Sans CJK SC Regular");
+            eprintln!("skipping: craft-fonts checkout has no Noto Sans CJK SC Regular");
+            return;
+        };
+        let font = skrifa::FontRef::new(face.bytes).unwrap();
+        let charmap = font.charmap();
+        let covered = (0xAC00..=0xD7A3)
+            .filter_map(char::from_u32)
+            .filter(|c| charmap.map(*c).is_some_and(|glyph| glyph.to_u32() != 0))
+            .count();
+        assert_eq!(covered, 11_172, "the startup font must cover every modern Hangul syllable");
+        assert!(WEB_FONTS.iter().any(|f| f.family == face.family && f.style == face.style && f.startup));
+        eprintln!("Noto Sans CJK SC Regular: {covered}/11172 modern Hangul syllables verified");
     }
 }

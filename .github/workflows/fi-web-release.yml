@@ -1,0 +1,465 @@
+# Build once on the fork branch, then publish those exact verified bytes from the tag.
+name: FI web build
+
+on:
+  push:
+    branches: [codex/hangul-web]
+    tags: [v0.11.0-fi.1]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fi-web-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  UPSTREAM_COMMIT: 0a33cff3f6e2a1e9e672f4c3816f58cd8d3d032e
+  CRAFT_FONTS_COMMIT: 3d9ab3a132ed0eff457e424226a435a901da30d3
+  FONT_SHA256: 2c76254f6fc379fddfce0a7e84fb5385bb135d3e399294f6eeb6680d0365b74b
+  FONT_OFL_SHA256: 6a73f9541c2de74158c0e7cf6b0a58ef774f5a780bf191f2d7ec9cc53efe2bf2
+  VECTORCRAFT_VERSION: 0.11.0-fi.1
+  PHOTO_UPSTREAM_COMMIT: c699e3cda69f4852b43c0b191ab0091aaeff9d6a
+  PHOTO_CRAFT_FONTS_COMMIT: abb83316d96aa59c1cf64784289e378fe9fa5695
+  PHOTO_FONT_ORIGIN_COMMIT: f8d157532fbfaeda587e826d4cd5b21a49186f7c
+  PHOTO_FONT_LICENSE_SHA256: cc0eaf2711e2af9e233ef8d4d2ead8481ae3ee51065a5dbe254578d5868aa40e
+  PHOTO_PATCH_PATH: patches/fi/photocraft-hangul-v0.9.0.patch
+  PHOTO_PATCH_SHA256: d6b3964b15d2bfb30533a9b8a5f23e7cf16f8a17a9e1fb7b5ceb3999e1e0de97
+  PHOTOCRAFT_VERSION: 0.9.0-fi.1
+  CARGO_PROFILE_DEV_DEBUG: "0"
+  CARGO_PROFILE_TEST_DEBUG: "0"
+
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+  RUST_BACKTRACE: 1
+
+jobs:
+  build:
+    name: VectorCraft
+    if: github.repository == 'chrisyu28-arch/vectorcraft' && github.ref == 'refs/heads/codex/hangul-web'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    env:
+      CRAFT_FONTS_DIR: ${{ github.workspace }}/craft-fonts
+      CRAFT_FONTS_REQUIRED: "1"
+      VECTORCRAFT_BUILD_SHA: ${{ github.sha }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Verify upstream tag and patch ancestry
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch --no-tags https://github.com/storytold/vectorcraft.git refs/tags/v0.11.0
+          test "$(git rev-parse 'FETCH_HEAD^{commit}')" = "$UPSTREAM_COMMIT"
+          git merge-base --is-ancestor "$UPSTREAM_COMMIT" HEAD
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          git diff --exit-code
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: storytold/craft-fonts
+          ref: ${{ env.CRAFT_FONTS_COMMIT }}
+          path: craft-fonts
+          persist-credentials: false
+      - name: Verify the exact font input and startup configuration
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git -C craft-fonts rev-parse HEAD)" = "$CRAFT_FONTS_COMMIT"
+          printf '%s  %s\n' "$FONT_SHA256" "craft-fonts/fonts/noto-sans-cjk-sc/NotoSansCJKsc-Regular.otf" | sha256sum --check --strict
+          grep -Fx 'startup | Noto Sans CJK SC | Regular' crates/text/web-fonts.txt
+          printf '%s  %s\n' "$FONT_OFL_SHA256" "craft-fonts/fonts/noto-sans-cjk-sc/OFL.txt" | sha256sum --check --strict
+      - name: Install upstream native CI build libraries
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends pkg-config libxkbcommon-dev libwayland-dev libx11-dev libxrandr-dev libxi-dev libgl1-mesa-dev
+
+      - uses: dtolnay/rust-toolchain@686976e191b89faba57d3206551f0f330d8cb249
+        with:
+          toolchain: 1.95.0
+          targets: wasm32-unknown-unknown
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          key: fi-web-rust-1.95.0
+      - name: Full upstream CI and required Hangul cmap guard
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo xtask ci
+          cargo test --locked -p vectorcraft-text --lib craft_fonts::tests -- --nocapture
+      - name: Install Trunk 0.21.14
+        shell: bash
+        run: |
+          set -euo pipefail
+          asset=trunk-x86_64-unknown-linux-gnu.tar.gz
+          base=https://github.com/trunk-rs/trunk/releases/download/v0.21.14
+          curl --fail --location --retry 3 "$base/$asset" --output "$RUNNER_TEMP/$asset"
+          curl --fail --location --retry 3 "$base/$asset.sha256" --output "$RUNNER_TEMP/$asset.sha256"
+          expected=$(awk '{print $1}' "$RUNNER_TEMP/$asset.sha256")
+          printf '%s  %s\n' "$expected" "$RUNNER_TEMP/$asset" | sha256sum --check --strict
+          tar -xzf "$RUNNER_TEMP/$asset" -C "$HOME/.cargo/bin" trunk
+          trunk --version
+      - name: Apply version and build the static package
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Only workspace versions change; dependency versions stay locked.
+          cargo xtask version set "$VECTORCRAFT_VERSION"
+          export VECTORCRAFT_BUILD_DATE
+          VECTORCRAFT_BUILD_DATE=$(git show -s --format=%cs "$GITHUB_SHA")
+          packaging/web/package.sh
+      - name: Verify packaged font bytes and record public provenance
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import hashlib, json, os, pathlib, subprocess, zipfile
+          def command(*args):
+              return subprocess.check_output(args, text=True).strip()
+          def digest(data):
+              return hashlib.sha256(data).hexdigest()
+          version = os.environ["VECTORCRAFT_VERSION"]
+          expected_font = os.environ["FONT_SHA256"]
+          root = pathlib.Path("dist/release")
+          package = root / f"vectorcraft-web-{version}.zip"
+          prefix = f"vectorcraft-web-{version}/"
+          font_url = f"fonts/{expected_font[:16]}/NotoSansCJKsc-Regular.otf"
+          source_font = pathlib.Path("craft-fonts/fonts/noto-sans-cjk-sc/NotoSansCJKsc-Regular.otf")
+          source_licence = pathlib.Path("craft-fonts/fonts/noto-sans-cjk-sc/OFL.txt")
+          assert digest(source_font.read_bytes()) == expected_font
+          assert digest(source_licence.read_bytes()) == os.environ["FONT_OFL_SHA256"]
+          with zipfile.ZipFile(package) as archive:
+              assert digest(archive.read(prefix + font_url)) == expected_font
+              assert archive.read(prefix + f"fonts/{expected_font[:16]}/OFL.txt") == source_licence.read_bytes()
+              assert archive.read(prefix + "OFL-noto-sans-cjk-sc.txt") == source_licence.read_bytes()
+              assert archive.read(prefix + "index.html")
+              assert any(name.startswith(prefix) and name.endswith(".wasm") for name in archive.namelist())
+          provenance = {
+              "schema_version": 1,
+              "source_repository": os.environ["GITHUB_REPOSITORY"],
+              "source_commit": command("git", "rev-parse", "HEAD"),
+              "upstream_repository": "storytold/vectorcraft",
+              "upstream_tag": "v0.11.0",
+              "upstream_commit": os.environ["UPSTREAM_COMMIT"],
+              "patch_commits": command("git", "rev-list", "--reverse", os.environ["UPSTREAM_COMMIT"] + "..HEAD").splitlines(),
+              "version": version,
+              "build_override": "cargo xtask version set " + version,
+              "build_run_id": os.environ["GITHUB_RUN_ID"],
+              "build_run_attempt": os.environ["GITHUB_RUN_ATTEMPT"],
+              "rustc": command("rustc", "--version"),
+              "trunk": command("trunk", "--version"),
+              "cargo_lock_sha256": digest(pathlib.Path("Cargo.lock").read_bytes()),
+              "craft_fonts_repository": "storytold/craft-fonts",
+              "craft_fonts_commit": os.environ["CRAFT_FONTS_COMMIT"],
+              "font_family": "Noto Sans CJK SC",
+              "font_style": "Regular",
+              "font_url": font_url,
+              "font_sha256": expected_font,
+              "font_licence": "OFL-1.1",
+              "font_licence_sha256": os.environ["FONT_OFL_SHA256"],
+              "font_origin": "https://github.com/notofonts/noto-cjk/blob/f8d157532fbfaeda587e826d4cd5b21a49186f7c/Sans/OTF/SimplifiedChinese/NotoSansCJKsc-Regular.otf",
+              "full_upstream_ci": "cargo xtask ci",
+              "hangul_syllables_verified": 11172,
+              "hangul_guard": "craft_fonts::tests::web_korean_fallback_covers_every_modern_hangul_syllable; packaged bytes match tested font SHA-256",
+              "package": package.name,
+              "package_sha256": digest(package.read_bytes()),
+          }
+          (root / "SOURCE_PROVENANCE.json").write_text(json.dumps(provenance, indent=2) + "\n", encoding="utf-8")
+          PY
+          (cd dist/release && sha256sum "vectorcraft-web-$VECTORCRAFT_VERSION.zip" SOURCE_PROVENANCE.json > SHA256SUMS.txt)
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: vectorcraft-web-${{ github.sha }}
+          path: dist/release/*
+          if-no-files-found: error
+          retention-days: 30
+
+
+  photo-build:
+    name: PhotoCraft
+    if: github.repository == 'chrisyu28-arch/vectorcraft' && github.ref == 'refs/heads/codex/hangul-web'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    env:
+      CRAFT_FONTS_DIR: ${{ github.workspace }}/photo-craft-fonts
+      CRAFT_FONTS_REQUIRED: "1"
+      PHOTOCRAFT_WEB_FONTS_DIR: ${{ github.workspace }}/photo-web-fonts
+      PHOTOCRAFT_HANGUL_FONT: ${{ github.workspace }}/photo-web-fonts/fonts/2c76254f6fc379fd/NotoSansCJKsc-Regular.otf
+      PHOTOCRAFT_BUILD_SHA: ${{ github.sha }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: storytold/photocraft
+          ref: ${{ env.PHOTO_UPSTREAM_COMMIT }}
+          path: photocraft
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: storytold/craft-fonts
+          ref: ${{ env.PHOTO_CRAFT_FONTS_COMMIT }}
+          path: photo-craft-fonts
+          persist-credentials: false
+      - name: Verify the official Photo tag, font checkout and exact public patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          git -C photocraft fetch --no-tags https://github.com/storytold/photocraft.git refs/tags/v0.9.0
+          test "$(git -C photocraft rev-parse 'FETCH_HEAD^{commit}')" = "$PHOTO_UPSTREAM_COMMIT"
+          test "$(git -C photocraft rev-parse HEAD)" = "$PHOTO_UPSTREAM_COMMIT"
+          test "$(git -C photo-craft-fonts rev-parse HEAD)" = "$PHOTO_CRAFT_FONTS_COMMIT"
+          printf '%s  %s\n' "$PHOTO_PATCH_SHA256" "$PHOTO_PATCH_PATH" | sha256sum --check --strict
+          git -C photocraft apply --check "$GITHUB_WORKSPACE/$PHOTO_PATCH_PATH"
+          git -C photocraft apply "$GITHUB_WORKSPACE/$PHOTO_PATCH_PATH"
+      - name: Stage the pinned original Hangul font, its own licence and manifest
+        shell: bash
+        run: |
+          set -euo pipefail
+          font_dir="$PHOTOCRAFT_WEB_FONTS_DIR/fonts/2c76254f6fc379fd"
+          mkdir -p "$font_dir"
+          base="https://raw.githubusercontent.com/notofonts/noto-cjk/$PHOTO_FONT_ORIGIN_COMMIT/Sans"
+          curl --fail --location --retry 3 "$base/OTF/SimplifiedChinese/NotoSansCJKsc-Regular.otf" --output "$PHOTOCRAFT_HANGUL_FONT"
+          curl --fail --location --retry 3 "$base/LICENSE" --output "$font_dir/OFL.txt"
+          printf '%s  %s\n' "$FONT_SHA256" "$PHOTOCRAFT_HANGUL_FONT" | sha256sum --check --strict
+          printf '%s  %s\n' "$PHOTO_FONT_LICENSE_SHA256" "$font_dir/OFL.txt" | sha256sum --check --strict
+          cp photocraft/packaging/web/hangul-fonts-manifest.txt "$PHOTOCRAFT_WEB_FONTS_DIR/fonts/manifest.txt"
+      - name: Install upstream native CI build libraries
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends pkg-config libxkbcommon-dev libwayland-dev libx11-dev libxrandr-dev libxi-dev libgl1-mesa-dev
+      - uses: dtolnay/rust-toolchain@686976e191b89faba57d3206551f0f330d8cb249
+        with:
+          toolchain: 1.95.0
+          targets: wasm32-unknown-unknown
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          key: fi-photo-web-rust-1.95.0
+          workspaces: photocraft -> target
+      - name: Full upstream CI and required real-font regression
+        working-directory: photocraft
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo xtask ci
+          cargo test --locked -p photocraft-ui-egui hangul_font::tests -- --include-ignored --nocapture
+      - name: Install Trunk 0.21.14
+        shell: bash
+        run: |
+          set -euo pipefail
+          asset=trunk-x86_64-unknown-linux-gnu.tar.gz
+          base=https://github.com/trunk-rs/trunk/releases/download/v0.21.14
+          curl --fail --location --retry 3 "$base/$asset" --output "$RUNNER_TEMP/$asset"
+          curl --fail --location --retry 3 "$base/$asset.sha256" --output "$RUNNER_TEMP/$asset.sha256"
+          expected=$(awk '{print $1}' "$RUNNER_TEMP/$asset.sha256")
+          printf '%s  %s\n' "$expected" "$RUNNER_TEMP/$asset" | sha256sum --check --strict
+          tar -xzf "$RUNNER_TEMP/$asset" -C "$HOME/.cargo/bin" trunk
+          trunk --version
+      - name: Build the Photo web ZIP with its unchanged 24 MiB wasm gate
+        working-directory: photocraft
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo xtask version set "$PHOTOCRAFT_VERSION"
+          export PHOTOCRAFT_BUILD_DATE
+          PHOTOCRAFT_BUILD_DATE=$(git -C "$GITHUB_WORKSPACE" show -s --format=%cs "$GITHUB_SHA")
+          packaging/web/package.sh
+      - name: Verify Photo package and record its public input chain
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import hashlib, json, os, pathlib, subprocess, zipfile
+          def digest(data):
+              return hashlib.sha256(data).hexdigest()
+          def command(*args):
+              return subprocess.check_output(args, text=True).strip()
+          version = os.environ["PHOTOCRAFT_VERSION"]
+          source = pathlib.Path("photocraft")
+          output = source / "dist/release"
+          package = output / f"photocraft-web-{version}.zip"
+          prefix = f"photocraft-web-{version}/"
+          font_url = "fonts/2c76254f6fc379fd/NotoSansCJKsc-Regular.otf"
+          licence_url = "fonts/2c76254f6fc379fd/OFL.txt"
+          manifest = (source / "packaging/web/hangul-fonts-manifest.txt").read_bytes()
+          font = pathlib.Path(os.environ["PHOTOCRAFT_HANGUL_FONT"]).read_bytes()
+          licence = (pathlib.Path(os.environ["PHOTOCRAFT_WEB_FONTS_DIR"]) / licence_url).read_bytes()
+          patch = pathlib.Path(os.environ["PHOTO_PATCH_PATH"]).read_bytes()
+          assert digest(font) == os.environ["FONT_SHA256"]
+          assert digest(licence) == os.environ["PHOTO_FONT_LICENSE_SHA256"]
+          assert digest(patch) == os.environ["PHOTO_PATCH_SHA256"]
+          with zipfile.ZipFile(package) as archive:
+              assert archive.read(prefix + font_url) == font
+              assert archive.read(prefix + licence_url) == licence
+              assert archive.read(prefix + "fonts/manifest.txt") == manifest
+              assert archive.read(prefix + "ASSETS.md") and archive.read(prefix + "ATTRIBUTION.md")
+              assert archive.read(prefix + "index.html")
+              wasm = [entry for entry in archive.infolist() if entry.filename.startswith(prefix) and entry.filename.endswith(".wasm")]
+              assert wasm and all(entry.file_size <= 25165824 for entry in wasm)
+          origin = "https://github.com/notofonts/noto-cjk/blob/" + os.environ["PHOTO_FONT_ORIGIN_COMMIT"] + "/Sans/"
+          provenance = {
+              "schema_version": 1,
+              "source_repository": os.environ["GITHUB_REPOSITORY"],
+              "source_commit": os.environ["GITHUB_SHA"],
+              "upstream_repository": "storytold/photocraft",
+              "upstream_tag": "v0.9.0",
+              "upstream_commit": os.environ["PHOTO_UPSTREAM_COMMIT"],
+              "patch_path": os.environ["PHOTO_PATCH_PATH"],
+              "patch_sha256": digest(patch),
+              "version": version,
+              "build_override": "cargo xtask version set " + version,
+              "build_run_id": os.environ["GITHUB_RUN_ID"],
+              "build_run_attempt": os.environ["GITHUB_RUN_ATTEMPT"],
+              "rustc": command("rustc", "--version"),
+              "trunk": command("trunk", "--version"),
+              "cargo_lock_sha256": digest((source / "Cargo.lock").read_bytes()),
+              "craft_fonts_repository": "storytold/craft-fonts",
+              "craft_fonts_commit": os.environ["PHOTO_CRAFT_FONTS_COMMIT"],
+              "font_origin_commit": os.environ["PHOTO_FONT_ORIGIN_COMMIT"],
+              "font_origin": origin + "OTF/SimplifiedChinese/NotoSansCJKsc-Regular.otf",
+              "font_family": "Noto Sans CJK SC",
+              "font_style": "Regular",
+              "font_url": font_url,
+              "font_sha256": digest(font),
+              "font_licence": "OFL-1.1",
+              "font_licence_origin": origin + "LICENSE",
+              "font_licence_url": licence_url,
+              "font_licence_sha256": digest(licence),
+              "font_manifest_sha256": digest(manifest),
+              "hangul_syllables_verified": 11172,
+              "hangul_guard": "hangul_font::tests::pinned_font_covers_all_hangul_and_survives_reinstallation (--include-ignored)",
+              "full_upstream_ci": "cargo xtask ci",
+              "wasm_max_bytes": 25165824,
+              "package": package.name,
+              "package_sha256": digest(package.read_bytes()),
+          }
+          (output / "PHOTO_SOURCE_PROVENANCE.json").write_text(json.dumps(provenance, indent=2) + "\n", encoding="utf-8")
+          PY
+          (cd photocraft/dist/release && sha256sum "photocraft-web-$PHOTOCRAFT_VERSION.zip" PHOTO_SOURCE_PROVENANCE.json > PHOTO_SHA256SUMS.txt)
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: photocraft-web-${{ github.sha }}
+          path: photocraft/dist/release/*
+          if-no-files-found: error
+          retention-days: 30
+
+  release:
+    if: github.repository == 'chrisyu28-arch/vectorcraft' && github.ref == 'refs/tags/v0.11.0-fi.1'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      actions: read
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Retrieve the successful branch build for this exact tag commit
+        shell: bash
+        run: |
+          set -euo pipefail
+          source_sha=$(git rev-parse HEAD)
+          test "$source_sha" = "$GITHUB_SHA"
+          run_id=$(gh api --method GET "repos/$GITHUB_REPOSITORY/actions/workflows/fi-web-release.yml/runs" -f branch=codex/hangul-web -f event=push -f head_sha="$source_sha" -f status=success -f per_page=100 --jq '.workflow_runs | map(select(.conclusion == "success" and .head_branch == "codex/hangul-web" and .event == "push")) | .[0].id // empty')
+          test -n "$run_id" || { echo "::error::No successful branch build at this exact commit. Finish the branch build before pushing the release tag."; exit 1; }
+          job_count=$(gh api --method GET "repos/$GITHUB_REPOSITORY/actions/runs/$run_id/jobs" -f filter=latest -f per_page=100 --jq '[.jobs[] | select((.name == "VectorCraft" or .name == "PhotoCraft") and .conclusion == "success")] | length')
+          test "$job_count" = 2 || { echo "::error::Both app jobs must succeed in the selected branch run."; exit 1; }
+
+          gh run download "$run_id" --repo "$GITHUB_REPOSITORY" --name "vectorcraft-web-$source_sha" --dir dist/release
+          gh run download "$run_id" --repo "$GITHUB_REPOSITORY" --name "photocraft-web-$source_sha" --dir dist/release
+          echo "VERIFIED_BRANCH_RUN_ID=$run_id" >> "$GITHUB_ENV"
+      - name: Verify checksums, source identity and packaged font again
+        shell: bash
+        run: |
+          set -euo pipefail
+          (cd dist/release && sha256sum --check --strict SHA256SUMS.txt PHOTO_SHA256SUMS.txt)
+          python3 - <<'PY'
+          import hashlib, json, os, pathlib, zipfile
+          root = pathlib.Path("dist/release")
+          p = json.loads((root / "SOURCE_PROVENANCE.json").read_text(encoding="utf-8"))
+          assert p["source_repository"] == os.environ["GITHUB_REPOSITORY"]
+          assert p["source_commit"] == os.environ["GITHUB_SHA"]
+          assert p["upstream_commit"] == os.environ["UPSTREAM_COMMIT"]
+          assert p["build_run_id"] == os.environ["VERIFIED_BRANCH_RUN_ID"]
+          assert p["craft_fonts_commit"] == os.environ["CRAFT_FONTS_COMMIT"]
+          assert p["font_sha256"] == os.environ["FONT_SHA256"]
+          assert p["font_licence_sha256"] == os.environ["FONT_OFL_SHA256"]
+          assert p["full_upstream_ci"] == "cargo xtask ci"
+          assert p["hangul_syllables_verified"] == 11172
+          assert p["version"] == os.environ["VECTORCRAFT_VERSION"]
+          name = "vectorcraft-web-" + p["version"] + ".zip"
+          assert p["package"] == name
+          package = root / name
+          assert hashlib.sha256(package.read_bytes()).hexdigest() == p["package_sha256"]
+          prefix = "vectorcraft-web-" + p["version"] + "/"
+          expected_url = "fonts/" + p["font_sha256"][:16] + "/NotoSansCJKsc-Regular.otf"
+          assert p["font_url"] == expected_url
+          with zipfile.ZipFile(package) as archive:
+              assert hashlib.sha256(archive.read(prefix + expected_url)).hexdigest() == p["font_sha256"]
+              licence = archive.read(prefix + "fonts/" + p["font_sha256"][:16] + "/OFL.txt")
+              assert hashlib.sha256(licence).hexdigest() == p["font_licence_sha256"]
+              assert archive.read(prefix + "OFL-noto-sans-cjk-sc.txt") == licence
+
+          photo = json.loads((root / "PHOTO_SOURCE_PROVENANCE.json").read_text(encoding="utf-8"))
+          assert photo["source_repository"] == p["source_repository"] == os.environ["GITHUB_REPOSITORY"]
+          assert photo["source_commit"] == p["source_commit"] == os.environ["GITHUB_SHA"]
+          assert photo["build_run_id"] == p["build_run_id"] == os.environ["VERIFIED_BRANCH_RUN_ID"]
+          assert photo["upstream_repository"] == "storytold/photocraft"
+          assert photo["upstream_tag"] == "v0.9.0"
+          assert photo["upstream_commit"] == os.environ["PHOTO_UPSTREAM_COMMIT"]
+          assert photo["craft_fonts_commit"] == os.environ["PHOTO_CRAFT_FONTS_COMMIT"]
+          assert photo["patch_path"] == os.environ["PHOTO_PATCH_PATH"]
+          assert photo["patch_sha256"] == os.environ["PHOTO_PATCH_SHA256"]
+          patch = pathlib.Path(os.environ["PHOTO_PATCH_PATH"]).read_bytes()
+          assert hashlib.sha256(patch).hexdigest() == photo["patch_sha256"]
+          assert photo["font_origin_commit"] == os.environ["PHOTO_FONT_ORIGIN_COMMIT"]
+          assert photo["font_sha256"] == os.environ["FONT_SHA256"]
+          assert photo["font_licence_sha256"] == os.environ["PHOTO_FONT_LICENSE_SHA256"]
+          assert photo["version"] == os.environ["PHOTOCRAFT_VERSION"]
+          assert photo["hangul_syllables_verified"] == 11172
+          assert photo["full_upstream_ci"] == "cargo xtask ci"
+          assert photo["wasm_max_bytes"] == 25165824
+          photo_name = "photocraft-web-" + photo["version"] + ".zip"
+          assert photo["package"] == photo_name
+          photo_zip = root / photo_name
+          assert hashlib.sha256(photo_zip.read_bytes()).hexdigest() == photo["package_sha256"]
+          photo_prefix = "photocraft-web-" + photo["version"] + "/"
+          photo_font_url = "fonts/2c76254f6fc379fd/NotoSansCJKsc-Regular.otf"
+          photo_licence_url = "fonts/2c76254f6fc379fd/OFL.txt"
+          assert photo["font_url"] == photo_font_url
+          assert photo["font_licence_url"] == photo_licence_url
+          with zipfile.ZipFile(photo_zip) as archive:
+              assert hashlib.sha256(archive.read(photo_prefix + photo_font_url)).hexdigest() == photo["font_sha256"]
+              assert hashlib.sha256(archive.read(photo_prefix + photo_licence_url)).hexdigest() == photo["font_licence_sha256"]
+              assert hashlib.sha256(archive.read(photo_prefix + "fonts/manifest.txt")).hexdigest() == photo["font_manifest_sha256"]
+              assert archive.read(photo_prefix + "ASSETS.md") and archive.read(photo_prefix + "ATTRIBUTION.md")
+              wasm = [entry for entry in archive.infolist() if entry.filename.startswith(photo_prefix) and entry.filename.endswith(".wasm")]
+              assert wasm and all(entry.file_size <= 25165824 for entry in wasm)
+
+          notes = (
+              "Hangul web bundles based on storytold/vectorcraft v0.11.0 and storytold/photocraft v0.9.0.\n\n"
+              "Source commit: " + p["source_commit"] + "\n"
+              "Upstream commit: " + p["upstream_commit"] + "\n"
+              "Photo upstream commit: " + photo["upstream_commit"] + "\n"
+              "Photo patch SHA-256: " + photo["patch_sha256"] + "\n"
+              "Verified branch build: https://github.com/" + p["source_repository"] + "/actions/runs/" + p["build_run_id"] + "\n\n"
+              "These are the exact branch-build artifacts; the release job does not rebuild them. "
+              "SOURCE_PROVENANCE.json and PHOTO_SOURCE_PROVENANCE.json record each pinned source, font, complete modern Hangul cmap check, licence and package hash.\n"
+          )
+          pathlib.Path(os.environ["RUNNER_TEMP"], "fi-web-release-notes.md").write_text(notes, encoding="utf-8")
+          PY
+      - name: Publish the verified package without replacing an existing release
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh release create v0.11.0-fi.1 "dist/release/vectorcraft-web-$VECTORCRAFT_VERSION.zip" dist/release/SOURCE_PROVENANCE.json dist/release/SHA256SUMS.txt "dist/release/photocraft-web-$PHOTOCRAFT_VERSION.zip" dist/release/PHOTO_SOURCE_PROVENANCE.json dist/release/PHOTO_SHA256SUMS.txt --repo "$GITHUB_REPOSITORY" --verify-tag --title "Hangul web builds: VectorCraft 0.11.0-fi.1 + PhotoCraft 0.9.0-fi.1" --notes-file "$RUNNER_TEMP/fi-web-release-notes.md" --prerelease --latest=false

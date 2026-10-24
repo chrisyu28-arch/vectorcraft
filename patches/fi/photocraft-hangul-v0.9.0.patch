@@ -1,0 +1,408 @@
+diff --git a/ASSETS.md b/ASSETS.md
+new file mode 100644
+index 0000000..19ecf1e
+--- /dev/null
++++ b/ASSETS.md
+@@ -0,0 +1,18 @@
++# Web Hangul font provenance
++
++This package uses the unmodified Noto Sans CJK SC Regular 2.004 original by the Noto Project Authors (Adobe and Google), under SIL Open Font License 1.1.
++
++- Source: https://github.com/notofonts/noto-cjk/blob/f8d157532fbfaeda587e826d4cd5b21a49186f7c/Sans/OTF/SimplifiedChinese/NotoSansCJKsc-Regular.otf
++- Source commit: f8d157532fbfaeda587e826d4cd5b21a49186f7c.
++- File: fonts/2c76254f6fc379fd/NotoSansCJKsc-Regular.otf; exactly 16,437,364 bytes.
++- SHA-256: 2c76254f6fc379fddfce0a7e84fb5385bb135d3e399294f6eeb6680d0365b74b.
++- Licence: fonts/2c76254f6fc379fd/OFL.txt, copied unchanged from the pinned source's Sans/LICENSE.
++- Font bytes are supplied at packaging time, never committed or subsetted. The source font name is unchanged.
++- The web shell fetches only the relative package path, with credentials omitted; it verifies the bytes locally before registering them for document text, the font menu, and every UI font family.
++- No CDN, external runtime service, host permissions or origin policy changes are required.
++
++Build with public PhotoCraft v0.9.0 source c699e3cda69f4852b43c0b191ab0091aaeff9d6a plus this patch. Preserve its original release source and dependency pins. Prepare a folder with fonts/manifest.txt copied from packaging/web/hangul-fonts-manifest.txt and the two original files at the paths above. Set PHOTOCRAFT_WEB_FONTS_DIR to that folder when running packaging/web/package.sh. Set PHOTOCRAFT_HANGUL_FONT to the original OTF when running the required ignored regression test:
++
++    cargo test --locked -p photocraft-ui-egui hangul_font::tests -- --include-ignored
++
++The regression test checks the pinned SHA-256, every modern Hangul syllable U+AC00 through U+D7A3 through the application's skrifa cmap reader, the menu family, egui glyphs, and UI font reinstallation. Browser rendering, IME, saved-document reopen and exports require separate runtime verification.
+diff --git a/ATTRIBUTION.md b/ATTRIBUTION.md
+index 227aee8..aee55cf 100644
+--- a/ATTRIBUTION.md
++++ b/ATTRIBUTION.md
+@@ -6,6 +6,10 @@ code and original assets are MIT OR Apache-2.0 (see [`LICENSE-MIT`](LICENSE-MIT)
+ in the same change; third-party assets must be permissively licensed and keep their license file
+ next to them.
+
++## Web Hangul fallback
++
++The web package serves the unmodified Noto Sans CJK SC Regular original (Noto Project Authors: Adobe and Google), SIL OFL 1.1. Its exact source commit, SHA-256, package path and adjacent licence are recorded in [ASSETS.md](ASSETS.md). Font bytes are supplied only at packaging time.
++
+ ## Bundled in the app
+
+ | Path | Title | Author | Source | License |
+diff --git a/Cargo.lock b/Cargo.lock
+index 54085cf..0508fb9 100644
+--- a/Cargo.lock
++++ b/Cargo.lock
+@@ -5035,6 +5035,7 @@ dependencies = [
+  "rayon",
+  "serde",
+  "serde_json",
++ "sha2",
+  "sys-locale",
+  "toml",
+  "winsafe",
+diff --git a/apps/photocraft-web/Cargo.toml b/apps/photocraft-web/Cargo.toml
+index a4ded64..aef9b5e 100644
+--- a/apps/photocraft-web/Cargo.toml
++++ b/apps/photocraft-web/Cargo.toml
+@@ -34,7 +34,7 @@ rfd = { workspace = true }
+ wasm-bindgen = "0.2"
+ wasm-bindgen-futures = "0.4"
+ js-sys = "0.3"
+-web-sys = { version = "0.3", features = ["Window", "Document", "Element", "HtmlElement", "HtmlCanvasElement", "HtmlAnchorElement", "Blob", "BlobPropertyBag", "Url", "Location", "CssStyleDeclaration", "Storage", "Event", "EventTarget", "MouseEvent", "PointerEvent", "BeforeUnloadEvent", "AbortController", "AbortSignal", "DomException", "Response", "IdbFactory", "IdbOpenDbRequest", "IdbDatabase", "IdbRequest", "IdbTransaction", "IdbTransactionMode", "IdbObjectStore", "IdbCursor", "IdbCursorWithValue", "RequestInit", "Navigator"] }
++web-sys = { version = "0.3", features = ["Window", "Document", "Element", "HtmlElement", "HtmlCanvasElement", "HtmlAnchorElement", "Blob", "BlobPropertyBag", "Url", "Location", "CssStyleDeclaration", "Storage", "Event", "EventTarget", "MouseEvent", "PointerEvent", "BeforeUnloadEvent", "AbortController", "AbortSignal", "DomException", "Response", "IdbFactory", "IdbOpenDbRequest", "IdbDatabase", "IdbRequest", "IdbTransaction", "IdbTransactionMode", "IdbObjectStore", "IdbCursor", "IdbCursorWithValue", "RequestInit", "RequestCredentials", "Navigator"] }
+
+ [dev-dependencies]
+ serde_json = { workspace = true }
+diff --git a/apps/photocraft-web/src/web.rs b/apps/photocraft-web/src/web.rs
+index a5c9d8a..5e22268 100644
+--- a/apps/photocraft-web/src/web.rs
++++ b/apps/photocraft-web/src/web.rs
+@@ -6,10 +6,9 @@ use std::sync::{Arc, Mutex};
+
+ use photocraft_codecs::{ChannelLayout, EncodeOptions, Image};
+ use photocraft_doc::Document;
+-use photocraft_ui_egui::i18n;
+ use photocraft_ui_egui::served_fonts;
+ use photocraft_ui_egui::theme::ThemeKind;
+-use photocraft_ui_egui::{FileDialogAnswer, FileDialogRequest, PhotocraftApp, Services};
++use photocraft_ui_egui::{FileDialogAnswer, FileDialogRequest, PhotocraftApp, Services, hangul_font, i18n};
+ use wasm_bindgen::JsCast as _;
+
+ type Inbox = Arc<Mutex<Vec<(String, Vec<u8>)>>>;
+@@ -52,6 +51,26 @@ pub fn start() {
+             log::error!("missing <canvas id=\"{CANVAS_ID}\">");
+             return;
+         };
++        // Keep the loading surface visible until the pinned, same-site fallback is verified.
++        let startup_font = match fetch_bytes(hangul_font::URL, None).await {
++            Ok(bytes) => match hangul_font::verify(&bytes) {
++                Ok(()) => bytes,
++                Err(e) => {
++                    log::error!("{e}");
++                    if let Some(el) = document.get_element_by_id("photocraft_loading") {
++                        el.set_text_content(Some("PhotoCraft could not verify its Korean font. Reload to retry."));
++                    }
++                    return;
++                }
++            },
++            Err(e) => {
++                log::error!("Korean font download failed: {e}");
++                if let Some(el) = document.get_element_by_id("photocraft_loading") {
++                    el.set_text_content(Some("PhotoCraft could not load its Korean font. Reload to retry."));
++                }
++                return;
++            }
++        };
+         let q = query();
+         let force_cpu = q.contains("cpu");
+         let mut options = eframe::WebOptions::default();
+@@ -77,9 +96,11 @@ pub fn start() {
+                 canvas,
+                 options,
+                 Box::new(move |cc| {
++                    hangul_font::install(&cc.egui_ctx, startup_font).map_err(std::io::Error::other)?;
+                     PhotocraftApp::setup_context(&cc.egui_ctx, ThemeKind::Pro);
+                     let inbox: Inbox = Arc::default();
+                     let served: Served = Arc::default();
++                    served.lock().unwrap_or_else(|e| e.into_inner()).fetched.insert(hangul_font::FAMILY.into());
+                     load_font_manifest(served.clone(), cc.egui_ctx.clone());
+                     let (session, warnings) = crate::preset_bridge::session(presets.clone());
+                     preset_warnings.extend(warnings);
+@@ -202,20 +223,31 @@ async fn fetch_bytes(url: &str, integrity: Option<&str>) -> Result<Vec<u8>, Stri
+     use wasm_bindgen_futures::JsFuture;
+     let js = |e: wasm_bindgen::JsValue| format!("{e:?}");
+     let window = web_sys::window().ok_or("no window")?;
+-    let request = match integrity {
+-        Some(sri) => {
+-            let init = web_sys::RequestInit::new();
+-            init.set_integrity(sri);
+-            window.fetch_with_str_and_init(url, &init)
+-        }
+-        None => window.fetch_with_str(url),
++    let abort = web_sys::AbortController::new().map_err(js)?;
++    let init = web_sys::RequestInit::new();
++    init.set_credentials(web_sys::RequestCredentials::Omit);
++    init.set_signal(Some(&abort.signal()));
++    if let Some(sri) = integrity {
++        init.set_integrity(sri);
++    }
++    let on_timeout = {
++        let abort = abort.clone();
++        wasm_bindgen::closure::Closure::<dyn FnMut()>::new(move || abort.abort())
+     };
+-    let resp: web_sys::Response = JsFuture::from(request).await.map_err(js)?.dyn_into().map_err(|_| "not a Response")?;
+-    if !resp.ok() {
+-        return Err(format!("HTTP {}", resp.status()));
++    let timer = window.set_timeout_with_callback_and_timeout_and_arguments_0(on_timeout.as_ref().unchecked_ref(), 30_000).map_err(js)?;
++    let result = async {
++        let resp: web_sys::Response =
++            JsFuture::from(window.fetch_with_str_and_init(url, &init)).await.map_err(js)?.dyn_into().map_err(|_| "not a Response")?;
++        if !resp.ok() {
++            return Err(format!("HTTP {}", resp.status()));
++        }
++        let body = JsFuture::from(resp.array_buffer().map_err(js)?).await.map_err(js)?;
++        Ok(js_sys::Uint8Array::new(&body).to_vec())
+     }
+-    let body = JsFuture::from(resp.array_buffer().map_err(js)?).await.map_err(js)?;
+-    Ok(js_sys::Uint8Array::new(&body).to_vec())
++    .await;
++    window.clear_timeout_with_handle(timer);
++    drop(on_timeout);
++    result
+ }
+
+ /// Wraps the app to read dropped files asynchronously (browsers can't read them synchronously,
+diff --git a/crates/ui-egui/Cargo.toml b/crates/ui-egui/Cargo.toml
+index aeefaca..f6218f0 100644
+--- a/crates/ui-egui/Cargo.toml
++++ b/crates/ui-egui/Cargo.toml
+@@ -36,6 +36,8 @@ serde = { workspace = true }
+ serde_json = { workspace = true }
+ log = { workspace = true }
+ base64 = "0.22"
++# Local integrity checking for the same-site web fallback font; already pinned in Cargo.lock.
++sha2 = "=0.10.9"
+ # Inflating the translation catalogs, stored deflated (build.rs); already linked through photocraft-io.
+ flate2 = { workspace = true }
+
+diff --git a/crates/ui-egui/src/hangul_font.rs b/crates/ui-egui/src/hangul_font.rs
+new file mode 100644
+index 0000000..0bee249
+--- /dev/null
++++ b/crates/ui-egui/src/hangul_font.rs
+@@ -0,0 +1,128 @@
++//! Pinned, same-site Hangul fallback for the web package. Bytes stay outside the wasm.
++use std::sync::{Arc, PoisonError};
++
++use egui::{FontData, FontDefinitions};
++use sha2::{Digest, Sha256};
++
++pub const FAMILY: &str = "Noto Sans CJK SC";
++pub const URL: &str = "fonts/2c76254f6fc379fd/NotoSansCJKsc-Regular.otf";
++pub const SHA256: &str = "2c76254f6fc379fddfce0a7e84fb5385bb135d3e399294f6eeb6680d0365b74b";
++const BYTE_LEN: usize = 16_437_364;
++const UI_NAME: &str = "web-hangul-fallback";
++const MANIFEST: &str = include_str!("../../../packaging/web/hangul-fonts-manifest.txt");
++
++/// Verify downloaded bytes locally, independently of browser SRI and the sandbox origin.
++pub fn verify(bytes: &[u8]) -> Result<(), String> {
++    if bytes.len() != BYTE_LEN || format!("{:x}", Sha256::digest(bytes)) != SHA256 {
++        return Err("Korean font integrity check failed".into());
++    }
++    Ok(())
++}
++
++/// Registers the verified font with both the document engine and this egui context.
++pub fn install(ctx: &egui::Context, bytes: Vec<u8>) -> Result<(), String> {
++    verify(&bytes)?;
++    let (fonts, skipped) = crate::served_fonts::parse_manifest(MANIFEST);
++    if !skipped.is_empty() || fonts.len() != 1 {
++        return Err("Korean font manifest is invalid".into());
++    }
++    crate::served_fonts::add_fonts(&fonts);
++    let added = photocraft_text::shared().lock().unwrap_or_else(PoisonError::into_inner).fonts.register_font_data(bytes.clone());
++    if !added.iter().any(|name| name == FAMILY) {
++        return Err("Korean font could not be registered".into());
++    }
++    ctx.data_mut(|data| data.insert_temp(egui::Id::new(UI_NAME), Arc::new(FontData::from_owned(bytes))));
++    crate::theme::install_fonts(ctx);
++    Ok(())
++}
++
++/// Reused on every theme/language font installation; the cached bytes belong to the context.
++pub(crate) fn append(ctx: &egui::Context, fonts: &mut FontDefinitions) {
++    let Some(data) = ctx.data(|data| data.get_temp::<Arc<FontData>>(egui::Id::new(UI_NAME))) else { return };
++    fonts.font_data.insert(UI_NAME.into(), data);
++    for stack in fonts.families.values_mut() {
++        if !stack.iter().any(|name| name == UI_NAME) {
++            stack.push(UI_NAME.into());
++        }
++    }
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++    use egui::{FontFamily, FontId};
++    use photocraft_engine::prefs::UiFontSize;
++
++    #[test]
++    fn rejects_untrusted_bytes_before_font_registration() {
++        assert!(verify(b"not a font").is_err());
++        assert!(install(&egui::Context::default(), vec![0; 32]).is_err());
++    }
++
++    #[test]
++    fn manifest_pins_the_same_site_original_and_korean_script() {
++        let (fonts, skipped) = crate::served_fonts::parse_manifest(MANIFEST);
++        assert!(skipped.is_empty());
++        assert_eq!(fonts.len(), 1);
++        assert_eq!(fonts[0].family, FAMILY);
++        assert_eq!(fonts[0].file, URL);
++        assert!(fonts[0].scripts.iter().any(|script| script == "Kore"));
++        assert!(fonts[0].integrity.is_some());
++        assert!(!URL.starts_with('/') && !URL.contains("://") && !URL.contains(".."));
++    }
++
++    #[test]
++    #[ignore = "requires PHOTOCRAFT_HANGUL_FONT; the web release job runs this explicitly"]
++    fn pinned_font_covers_all_hangul_and_survives_reinstallation() {
++        let path = std::env::var("PHOTOCRAFT_HANGUL_FONT").expect("set PHOTOCRAFT_HANGUL_FONT to the pinned original OTF");
++        let bytes = std::fs::read(path).expect("read the pinned original");
++        verify(&bytes).expect("original SHA-256");
++        let mut covered = 0;
++        for cp in 0xAC00..=0xD7A3 {
++            let c = char::from_u32(cp).unwrap();
++            // This is the application's skrifa cmap path, with no system-font lookup.
++            assert_eq!(photocraft_text::scripts::covering_face(&bytes, c), Some(0), "U+{cp:04X}");
++            covered += 1;
++        }
++        assert_eq!(covered, 11_172);
++        let mut corrupted = bytes.clone();
++        corrupted[100] ^= 1;
++        assert!(verify(&corrupted).is_err(), "same-length corruption must fail");
++        let ctx = egui::Context::default();
++        install(&ctx, bytes).expect("register in the UI and document database");
++        assert!(photocraft_text::shared().lock().unwrap().fonts.families().iter().any(|name| name == FAMILY));
++        assert!(photocraft_text::served::families().iter().any(|name| name == FAMILY));
++        for size in [UiFontSize::Tiny, UiFontSize::Medium, UiFontSize::Large, UiFontSize::Small] {
++            crate::theme::set_ui_font_size(&ctx, size);
++            // Language changes use the same installation entry point.
++            crate::theme::install_fonts_with(
++                &ctx,
++                crate::cjk_fonts::Sources {
++                    locale: || None,
++                    files: |_| vec![],
++                    last_resort: Vec::new,
++                    scripts: |_| vec![],
++                    covers: photocraft_text::scripts::covering_face,
++                    embedded: crate::cjk_fonts::no_embedded,
++                },
++            );
++            for _ in 0..2 {
++                ctx.run_ui(Default::default(), |ui| {
++                    ui.label("한글 파일 레이어");
++                })
++                .textures_delta
++                .clear();
++            }
++            let definitions = ctx.fonts(|f| f.definitions().clone());
++            for (family, stack) in &definitions.families {
++                assert_eq!(stack.iter().filter(|name| *name == UI_NAME).count(), 1);
++                for c in "한글 파일 레이어".chars().filter(|c| !c.is_whitespace()) {
++                    assert!(ctx.fonts_mut(|f| f.has_glyph(&FontId::new(13.0, family.clone()), c)), "{family:?}: {c}");
++                }
++            }
++            let id = FontId::new(13.0, FontFamily::Proportional);
++            assert!(ctx.fonts_mut(|f| (0xAC00..=0xD7A3).all(|cp| f.has_glyph(&id, char::from_u32(cp).unwrap()))));
++        }
++        println!("Pinned Noto Sans CJK SC: SHA-256 verified; skrifa cmap 11172/11172; all egui families and reinstall checks passed");
++    }
++}
+diff --git a/crates/ui-egui/src/lib.rs b/crates/ui-egui/src/lib.rs
+index 3811895..b5e043b 100644
+--- a/crates/ui-egui/src/lib.rs
++++ b/crates/ui-egui/src/lib.rs
+@@ -100,6 +100,7 @@ pub mod gpu_canvas;
+ pub mod gpu_status;
+ pub mod gradient_ui;
+ pub mod guide_layout_ui;
++pub mod hangul_font;
+ pub mod hold_keys;
+ pub mod i18n;
+ mod icon_data;
+diff --git a/crates/ui-egui/src/theme.rs b/crates/ui-egui/src/theme.rs
+index 0b2cc7c..4cf26f1 100644
+--- a/crates/ui-egui/src/theme.rs
++++ b/crates/ui-egui/src/theme.rs
+@@ -858,6 +858,7 @@ pub fn install_fonts_with(ctx: &egui::Context, cjk: crate::cjk_fonts::Sources) {
+         stack.extend(fallback.iter().cloned());
+         fonts.families.insert(FontFamily::Name(fam.into()), stack);
+     }
++    crate::hangul_font::append(ctx, &mut fonts);
+     let size = ui_font_size(ctx);
+     for (name, data) in &mut fonts.font_data {
+         size_ui_font(ctx, name, Arc::make_mut(data));
+diff --git a/packaging/web/hangul-fonts-manifest.txt b/packaging/web/hangul-fonts-manifest.txt
+new file mode 100644
+index 0000000..e4ff782
+--- /dev/null
++++ b/packaging/web/hangul-fonts-manifest.txt
+@@ -0,0 +1 @@
++Noto Sans CJK SC | Regular | fonts/2c76254f6fc379fd/NotoSansCJKsc-Regular.otf | Kore,Hans,Latn | OFL-1.1 | fonts/2c76254f6fc379fd/OFL.txt | 2c76254f6fc379fddfce0a7e84fb5385bb135d3e399294f6eeb6680d0365b74b | https://github.com/notofonts/noto-cjk/tree/f8d157532fbfaeda587e826d4cd5b21a49186f7c/Sans/OTF/SimplifiedChinese
+diff --git a/packaging/web/package.sh b/packaging/web/package.sh
+index 8c6c1f8..645a5f6 100755
+--- a/packaging/web/package.sh
++++ b/packaging/web/package.sh
+@@ -11,6 +11,30 @@ set -euo pipefail
+ . "$(dirname "${BASH_SOURCE[0]}")/../env.sh"
+ HERE="$ROOT/packaging/web"
+
++# The web shell cannot start without this pinned fallback. Check before building and after
++# copying, so missing or modified assets never produce an apparently valid release ZIP.
++HANGUL_DIR="fonts/2c76254f6fc379fd"
++verify_hangul_assets() {
++  local root="$1" f
++  [ -f "$root/fonts/manifest.txt" ] || { echo "error: required fonts/manifest.txt missing" >&2; exit 1; }
++  cmp -s "$HERE/hangul-fonts-manifest.txt" "$root/fonts/manifest.txt" || {
++    echo "error: fonts/manifest.txt differs from the pinned Hangul manifest" >&2; exit 1;
++  }
++  for f in NotoSansCJKsc-Regular.otf OFL.txt; do
++    [ -f "$root/$HANGUL_DIR/$f" ] || { echo "error: required $HANGUL_DIR/$f missing" >&2; exit 1; }
++  done
++  [ "$(sha256 "$root/$HANGUL_DIR/NotoSansCJKsc-Regular.otf")" = "2c76254f6fc379fddfce0a7e84fb5385bb135d3e399294f6eeb6680d0365b74b" ] || {
++    echo "error: Korean font SHA-256 mismatch" >&2; exit 1;
++  }
++  [ "$(sha256 "$root/$HANGUL_DIR/OFL.txt")" = "cc0eaf2711e2af9e233ef8d4d2ead8481ae3ee51065a5dbe254578d5868aa40e" ] || {
++    echo "error: Korean font licence SHA-256 mismatch" >&2; exit 1;
++  }
++}
++[ -n "${PHOTOCRAFT_WEB_FONTS_DIR:-}" ] || {
++  echo "error: PHOTOCRAFT_WEB_FONTS_DIR is required for the web package" >&2; exit 1;
++}
++verify_hangul_assets "$PHOTOCRAFT_WEB_FONTS_DIR"
++
+ if [ "${1:-}" != "--skip-build" ]; then
+   command -v trunk >/dev/null || { echo "error: trunk not found (cargo install trunk --locked)" >&2; exit 1; }
+   (cd "$ROOT/apps/photocraft-web" && trunk build --release)
+@@ -50,24 +74,13 @@ cp -R "$SITE/." "$WORK/$NAME/"
+ cp "$HERE/_headers" "$HERE/.htaccess" "$WORK/$NAME/"
+ cp "$HERE/README.md" "$WORK/$NAME/HOSTING.md"
+ copy_docs "$WORK/$NAME"
+-# Optional served fonts (README.md › Fonts): PHOTOCRAFT_WEB_FONTS_DIR=<a craft-fonts checkout, or any
+-# folder with a fonts/manifest.txt in its format> copies the manifest, every font and licence file
+-# it lists into the site, at the same paths. The wasm is unchanged; the app fetches fonts on demand.
+-if [ -n "${PHOTOCRAFT_WEB_FONTS_DIR:-}" ]; then
+-  FONTS_MANIFEST="$PHOTOCRAFT_WEB_FONTS_DIR/fonts/manifest.txt"
+-  [ -f "$FONTS_MANIFEST" ] || { echo "error: $FONTS_MANIFEST missing (PHOTOCRAFT_WEB_FONTS_DIR)" >&2; exit 1; }
+-  mkdir -p "$WORK/$NAME/fonts"
+-  cp "$FONTS_MANIFEST" "$WORK/$NAME/fonts/manifest.txt"
+-  # Field 3 is the font file, field 6 (if any) its licence file; both relative to the folder.
+-  awk -F' [|] ' '!/^[[:space:]]*(#|$)/ { print $3; if ($6 != "") print $6 }' "$FONTS_MANIFEST" | sort -u | while IFS= read -r f; do
+-    case "$f" in
+-      "" | /* | *..* | *\\* | *://*) echo "error: $FONTS_MANIFEST: '$f' is not a relative path inside the folder" >&2; exit 1 ;;
+-    esac
+-    mkdir -p "$WORK/$NAME/$(dirname "$f")"
+-    cp "$PHOTOCRAFT_WEB_FONTS_DIR/$f" "$WORK/$NAME/$f"
+-  done
+-  echo "served fonts: $(grep -cvE '^[[:space:]]*(#|$)' "$FONTS_MANIFEST") manifest lines from $PHOTOCRAFT_WEB_FONTS_DIR"
+-fi
++cp "$ROOT/ASSETS.md" "$ROOT/ATTRIBUTION.md" "$WORK/$NAME/"
++# Ship the exact manifest, original font and licence checked above at their relative URLs.
++mkdir -p "$WORK/$NAME/$HANGUL_DIR"
++cp "$PHOTOCRAFT_WEB_FONTS_DIR/fonts/manifest.txt" "$WORK/$NAME/fonts/manifest.txt"
++cp "$PHOTOCRAFT_WEB_FONTS_DIR/$HANGUL_DIR/NotoSansCJKsc-Regular.otf" "$WORK/$NAME/$HANGUL_DIR/"
++cp "$PHOTOCRAFT_WEB_FONTS_DIR/$HANGUL_DIR/OFL.txt" "$WORK/$NAME/$HANGUL_DIR/"
++verify_hangul_assets "$WORK/$NAME"
+ rm -f "$DIST/$NAME.zip"
+ (cd "$WORK" && zip -qr9 "$DIST/$NAME.zip" "$NAME")
+ echo "wrote $DIST/$NAME.zip"
