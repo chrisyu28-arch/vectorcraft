@@ -18,7 +18,9 @@ The family name is exact. `Noto Sans SC` is not the manifest entry used here, an
 
 The upstream v0.11.0 workspace declares Rust 1.95 as its minimum version. Its Web release job selects the moving `stable` toolchain through the pinned rust-toolchain action; this workflow fixes 1.95.0 for repeatable tool selection, without claiming that every upstream release used that exact compiler. The original Web release job packages the app without running the full `cargo xtask ci` gate.
 
-Running that gate on 1.95.0 exposed two Clippy warnings in original upstream code. The renderer now expresses a missing or different cached pixel buffer with `is_none_or` and inequality, preserving both early-return cases. PDF import puts the existing shading-resource check in the match guard, still counting only readable shadings and ignoring absent ones. These equivalent source changes retain `-D warnings`; no lint or CI gate is disabled.
+Running that gate on 1.95.0 exposed Clippy warnings in original upstream code. The renderer now expresses a missing or different cached pixel buffer with `is_none_or` and inequality, preserving both early-return cases. PDF import puts the existing shading-resource check in the match guard, still counting only readable shadings and ignoring absent ones. Layer-panel Boolean comparison uses inequality instead of equality with a negated operand. The Photo patch similarly moves the CR3 preview-count and PNG missing-image checks into match guards, retaining the separate normal IEND arm. These equivalent source changes retain `-D warnings`; no lint or CI gate is disabled.
+
+Both jobs first run Clippy with `--keep-going` to collect independent compiler failures in one run. This is an additional diagnostic pass with the same warning policy; the unchanged complete `cargo xtask ci` and mandatory font tests must still succeed afterward.
 
 ## Build and release
 
